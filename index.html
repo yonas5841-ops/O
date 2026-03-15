@@ -3335,6 +3335,15 @@ function save() {
 }
 
 // Seed demo data
+// Demo data versiyon haaraa yoo jiraate haquu
+if (localStorage.getItem('odh_demo_cleared') !== 'v31') {
+  // Demo users qofa haquu — real users eeguuf
+  const demoIds = ['u1','u2','u3','u4'];
+  state.users = state.users.filter(u => !demoIds.includes(u.id));
+  localStorage.setItem('odh_demo_cleared','v31');
+  if (state.users.length === 0) localStorage.removeItem('odh_users');
+}
+
 if (state.users.length === 0) {
   state.users = [
     {id:'u1',name:'Tolasaa Gammachuu',email:'tolasa@gmail.com',pass:'pass123',phone:'+251911000001',city:'Finfinnee',telegram:'@tolasa',tiktok:'@tolasa_t',points:1240,referrals:14,referralCode:'REF-TOLASA',referredBy:null,rank:'gold',isScholar:true,bio:'Daldaltuu fi entrepreneur',status:'active',createdAt:'2025-01-15'},
@@ -7290,39 +7299,7 @@ function showLoginWarning(email) {
 
 // Patch login function
 function login() {
-  email = document.getElementById('loginEmail')?.value?.trim() || '';
-  if (isAccountLocked(email)) {
-    data = getLoginAttempts(email);
-    remaining = Math.ceil((data.lockedAt + LOCK_DURATION - Date.now()) / 60000);
-    showToast(`🔒 Akkaawuntiin cufame – daqiiqaa ${remaining} booda yaalii`, 'error');
-    return;
-  }
-  const pw = document.getElementById('loginPass')?.value || '';
-  user = state.users.find(u => u.email === email);
-  if (!user || user.password !== pw) {
-    const attempts = recordFailedAttempt(email);
-    showLoginWarning(email);
-    if (attempts >= MAX_ATTEMPTS) {
-      showToast('🔒 Yaalii 5 darbeera – daqiiqaa 15 booda yaalii!', 'error');
-    } else {
-      showToast(`❌ Email ykn password dogoggoraa – yaalii ${MAX_ATTEMPTS - attempts} hafe`, 'error');
-    }
-    return;
-  }
-  clearLoginAttempts(email);
-  login(); // rate-limit check passed
-  if (false) {
-    // Fallback direct login
-    state.currentUser = user;
-    state.isAdmin = user.isAdmin;
-    save();
-    closeModal('loginModal');
-    updateNav();
-    showPage('home');
-    showToast('Nagaan dhufte! 👋', 'success');
-    startSessionTimer();
-    checkBadgesOnLogin && checkBadgesOnLogin();
-  }
+  loginUser(); // Firebase-aware login
 }
 
 // Show warning as user types email
