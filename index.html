@@ -3478,14 +3478,42 @@ function registerUser() {
 
   state.users.push(newUser);
   save();
+  // Firebase keessatti kuusi
+  if (DB.ready) {
+    DB.saveUser(newUser).then(() => {
+      console.log('✅ User Firebase keessatti kuufame:', newUser.email);
+    }).catch(e => console.warn('Firebase user save:', e.message));
+  }
   closeModal('registerModal');
   loginAs(newUser);
   showToast('Galmee milkaa\'e! Baga nagaan dhufte 🎉','success');
 }
 
-function loginUser() {
+async function loginUser() {
   const email = v('loginEmail').toLowerCase();
   const pass = v('loginPass');
+
+  // 1. Dursaan Firebase irraa ilaaluu yaalii
+  if (DB.ready) {
+    try {
+      const snap = await DB.db.collection('users')
+        .where('email','==',email).limit(1).get();
+      if (!snap.empty) {
+        const fbUser = { id: snap.docs[0].id, ...snap.docs[0].data() };
+        if (fbUser.pass !== pass) return showErr('loginError','Email ykn password dogoggore!');
+        if (fbUser.status === 'suspended') return showErr('loginError','Akkaawuntiin kee dhorkamedha. Admin quunnamuu.');
+        // localStorage sync godhi
+        const idx = state.users.findIndex(u => u.id === fbUser.id);
+        if (idx >= 0) state.users[idx] = fbUser; else state.users.push(fbUser);
+        save();
+        closeModal('loginModal');
+        loginAs(fbUser);
+        return;
+      }
+    } catch(e) { console.warn('Firebase login check:', e.message); }
+  }
+
+  // 2. Fallback → localStorage
   const user = state.users.find(u => u.email === email && u.pass === pass);
   if (!user) return showErr('loginError','Email ykn password dogoggore!');
   if (user.status === 'suspended') return showErr('loginError','Akkaawuntiin kee dhorkamedha. Admin quunnamuu.');
@@ -8377,12 +8405,23 @@ const DB = {
   },
 };
 
-// ── Patch save() to also write to Firebase ────────────────────
-async function save() {
-  save(); // localStorage backup
-  if (!DB.ready || !state.currentUser) return;
-  // Async fire-and-forget – don\'t block UI
-  DB.saveUser(state.currentUser).catch(e => console.warn('DB save user:', e.message));
+// ── save() → localStorage + Firebase ─────────────────────────
+function save() {
+  localStorage.setItem('odh_users',   JSON.stringify(state.users));
+  localStorage.setItem('odh_posts',   JSON.stringify(state.posts));
+  localStorage.setItem('odh_gifts',   JSON.stringify(state.gifts));
+  localStorage.setItem('odh_payments',JSON.stringify(state.payments));
+  localStorage.setItem('odh_notifs',  JSON.stringify(state.notifications));
+  localStorage.setItem('odh_jobs',    JSON.stringify(state.jobs));
+  localStorage.setItem('odh_books',   JSON.stringify(state.books));
+  localStorage.setItem('odh_courses', JSON.stringify(state.courses));
+  localStorage.setItem('odh_stories', JSON.stringify(state.stories));
+  localStorage.setItem('odh_apps',    JSON.stringify(state.applications));
+  localStorage.setItem('odh_enroll',  JSON.stringify(state.enrollments));
+  // Firebase sync – fire-and-forget
+  if (DB.ready && state.currentUser) {
+    DB.saveUser(state.currentUser).catch(e => console.warn('DB user:', e.message));
+  }
 }
 
 // ════════════════════════════════════════════════════════════
