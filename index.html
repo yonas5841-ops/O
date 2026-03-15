@@ -3451,7 +3451,7 @@ function showPage(page) {
 // ============================================================
 // AUTH
 // ============================================================
-function registerUser() {
+async function registerUser() {
   const name = v('regName'), email = v('regEmail').toLowerCase(),
         pass = v('regPass'), pass2 = v('regPass2'),
         phone = v('regPhone'), telegram = v('regTelegram'),
@@ -3460,7 +3460,6 @@ function registerUser() {
   if (!name || !email || !pass) return showErr('regError','Dirqama ta\'an guuti!');
   if (pass !== pass2) return showErr('regError','Password wal hin fakkaatu!');
   if (pass.length < 6) return showErr('regError','Password qubee 6 ol ta\'uu qaba!');
-  if (state.users.find(u => u.email === email)) return showErr('regError','Email kun dursaan galmaa\'eera!');
 
   const id = 'u' + Date.now();
   const refCodeNew = 'REF-' + name.toUpperCase().replace(/\s/g,'').slice(0,6) + Math.floor(Math.random()*100);
@@ -3485,44 +3484,76 @@ function registerUser() {
     status:'active', createdAt: new Date().toISOString().split('T')[0]
   };
 
-  state.users.push(newUser);
-  save();
-  // Firebase keessatti kuusi
-  if (DB.ready) {
-    DB.saveUser(newUser).then(() => {
-      console.log('✅ User Firebase keessatti kuufame:', newUser.email);
-    }).catch(e => console.warn('Firebase user save:', e.message));
+  // Firebase Auth fayyadami
+  if (DB.ready && DB.auth) {
+    try {
+      const cred = await DB.auth.createUserWithEmailAndPassword(email, pass);
+      newUser.uid = cred.user.uid;
+      state.users.push(newUser);
+      save();
+      await DB.saveUser(newUser);
+      closeModal('registerModal');
+      loginAs(newUser);
+      showToast('Galmee milkaa\'e! Baga nagaan dhufte 🎉','success');
+    } catch(e) {
+      if (e.code === 'auth/email-already-in-use') {
+        showErr('regError','Email kun dursaan galmaa\'eera! Seena tuqi.');
+      } else if (e.code === 'auth/weak-password') {
+        showErr('regError','Password cimaa ta\'uu qaba (qubee 6+)!');
+      } else {
+        showErr('regError','Rakkoo: ' + e.message);
+      }
+    }
+  } else {
+    // Fallback localStorage
+    if (state.users.find(u => u.email === email)) return showErr('regError','Email kun dursaan galmaa\'eera!');
+    state.users.push(newUser);
+    save();
+    closeModal('registerModal');
+    loginAs(newUser);
+    showToast('Galmee milkaa\'e! Baga nagaan dhufte 🎉','success');
   }
-  closeModal('registerModal');
-  loginAs(newUser);
-  showToast('Galmee milkaa\'e! Baga nagaan dhufte 🎉','success');
 }
 
 async function loginUser() {
   const email = v('loginEmail').toLowerCase();
   const pass = v('loginPass');
+  if (!email || !pass) return showErr('loginError','Email fi password galchi!');
 
-  // 1. Dursaan Firebase irraa ilaaluu yaalii
-  if (DB.ready) {
+  // Firebase Auth fayyadami
+  if (DB.ready && DB.auth) {
     try {
-      const snap = await DB.db.collection('users')
-        .where('email','==',email).limit(1).get();
-      if (!snap.empty) {
-        const fbUser = { id: snap.docs[0].id, ...snap.docs[0].data() };
-        if (fbUser.pass !== pass) return showErr('loginError','Email ykn password dogoggore!');
-        if (fbUser.status === 'suspended') return showErr('loginError','Akkaawuntiin kee dhorkamedha. Admin quunnamuu.');
-        // localStorage sync godhi
-        const idx = state.users.findIndex(u => u.id === fbUser.id);
-        if (idx >= 0) state.users[idx] = fbUser; else state.users.push(fbUser);
-        save();
-        closeModal('loginModal');
-        loginAs(fbUser);
-        return;
+      const cred = await DB.auth.signInWithEmailAndPassword(email, pass);
+      const uid = cred.user.uid;
+      // Firestore irraa user data fudhi
+      let userData = null;
+      try {
+        const snap = await DB.db.collection('users').where('uid','==',uid).limit(1).get();
+        if (!snap.empty) userData = { id: snap.docs[0].id, ...snap.docs[0].data() };
+      } catch(e) {}
+      // fallback localStorage
+      if (!userData) userData = state.users.find(u => u.email === email);
+      if (!userData) userData = { id: uid, uid, name: email.split('@')[0], email, points:0, rank:'member', status:'active' };
+      if (userData.status === 'suspended') {
+        await DB.auth.signOut();
+        return showErr('loginError','Akkaawuntiin kee dhorkamedha. Admin quunnamuu.');
       }
-    } catch(e) { console.warn('Firebase login check:', e.message); }
+      // sync localStorage
+      const idx = state.users.findIndex(u => u.email === email);
+      if (idx >= 0) state.users[idx] = userData; else state.users.push(userData);
+      save();
+      closeModal('loginModal');
+      loginAs(userData);
+      return;
+    } catch(e) {
+      if (e.code === 'auth/user-not-found' || e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential') {
+        return showErr('loginError','Email ykn password dogoggore!');
+      }
+      console.warn('Firebase login error:', e.code, e.message);
+    }
   }
 
-  // 2. Fallback → localStorage
+  // Fallback → localStorage
   const user = state.users.find(u => u.email === email && u.pass === pass);
   if (!user) return showErr('loginError','Email ykn password dogoggore!');
   if (user.status === 'suspended') return showErr('loginError','Akkaawuntiin kee dhorkamedha. Admin quunnamuu.');
@@ -8281,6 +8312,24 @@ const DB = {
       const _fbi=document.getElementById('fbIndicator'); if(_fbi) _fbi.style.display='flex';
       DB.callbacks.forEach(fn => fn());
       DB.callbacks = [];
+
+      // onAuthStateChanged — refresh yoo ta'e user seenuu itti fufuu
+      firebase.auth().onAuthStateChanged(async (fireUser) => {
+        if (fireUser && !state.currentUser) {
+          try {
+            const snap = await DB.db.collection('users').where('uid','==',fireUser.uid).limit(1).get();
+            if (!snap.empty) {
+              const userData = { id: snap.docs[0].id, ...snap.docs[0].data() };
+              const idx = state.users.findIndex(u => u.email === userData.email);
+              if (idx >= 0) state.users[idx] = userData; else state.users.push(userData);
+              save();
+              loginAs(userData);
+              console.log('✅ Auto-login:', userData.email);
+            }
+          } catch(e) { console.warn('Auto-login failed:', e.message); }
+        }
+      });
+
       // Sync localStorage → Firebase on first login
       DB.migrateLocalStorage();
     } catch(e) {
